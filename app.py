@@ -1,4 +1,5 @@
 import json
+import re
 import requests
 import streamlit as st
 from groq import Groq
@@ -12,15 +13,15 @@ Beginne JEDE allererste Antwort im Chat zwingend mit:
 „ℹ️ **Transparenzhinweis:** Ich bin ein KI-System zur Unterstützung deiner morgendlichen Outfit-Wahl. Meine Vorschläge basieren auf Live-Wetterdaten und festen Bekleidungsregeln – die endgültige Entscheidung triffst immer du selbst.“
 
 Workflow:
-1. Prüfe, ob Zielort und Anlass (Uni, Arbeit oder Freizeit) vorliegen. Fehlt ein Punkt, frage kurz nach. Rate niemals den Ort oder Anlass!
+1. Prüfe, ob Zielort und Anlass (Uni, Arbeit oder Freizeit) vorliegen. Fehlt ein Punkt, frage gezielt und kurz nach. Rate niemals den Ort oder Anlass!
 2. Leite den Style ab:
    - Freizeit -> locker & funktional
    - Uni -> locker bis alltagstauglich (Smart-Everyday)
    - Arbeit -> gepflegt bis formell (Business Casual / Formell)
-3. Rufe das Wetter ZWINGEND über das Tool `get_weather_data` ab. Erfinde niemals Wetterwerte!
+3. Wenn dir unten echte Live-Wetterdaten von Open-Meteo übergeben wurden, nutze AUSSCHLIESSLICH diese echten Werte (Temperatur, Wind, Regen). Erfinde niemals eigene Wetterwerte!
 4. Schlage maximal 3 Outfit-Varianten aus neutralen Kategorien vor (Oberteile, Mid-Layer, Jacken, Hosen, Schuhe - keine Marken).
 5. Genau 1 Begründungssatz pro Variante: Verknüpfe Temperatur, Wind, Niederschlag, Anlass und Style in diesem Satz.
-6. Schließe immer exakt mit der Frage: „Passt das zusammen?“ (Maximal 3 Durchläufe).
+6. Schließe immer exakt mit der Frage: „Passt das zusammen?“ (Maximal 3 Durchläufe mitzählen).
 7. Übergib nach Bestätigung oder nach Durchlauf 3 die finale Entscheidung an die Person.
 
 Nicht-Ziele (strikt ablehnen):
@@ -28,13 +29,13 @@ Keine Marken- oder Kaufberatung, keine Analyse von Fotos oder Körpermaßen/Grö
 """
 
 # --- 2. OPEN-METEO WETTER-ABRUF ---
-def get_weather_data(city: str) -> str:
+def get_weather_data(city: str) -> dict:
     try:
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=de&format=json"
         geo_res = requests.get(geo_url, timeout=5).json()
         
         if not geo_res.get("results"):
-            return json.dumps({"error": f"Ort '{city}' nicht gefunden."})
+            return {"error": f"Ort '{city}' konnte nicht gefunden werden."}
             
         lat = geo_res["results"][0]["latitude"]
         lon = geo_res["results"][0]["longitude"]
@@ -48,40 +49,35 @@ def get_weather_data(city: str) -> str:
         )
         w_res = requests.get(weather_url, timeout=5).json()
         
-        data = {
+        return {
             "ort": resolved_name,
-            "temperatur_celsius": w_res["current"]["temperature_2m"],
-            "wind_kmh": w_res["current"]["wind_speed_10m"],
-            "niederschlagswahrscheinlichkeit_prozent": w_res["daily"]["precipitation_probability_max"][0]
+            "temperatur": w_res["current"]["temperature_2m"],
+            "wind": w_res["current"]["wind_speed_10m"],
+            "regen": w_res["daily"]["precipitation_probability_max"][0]
         }
-        return json.dumps(data)
     except Exception as e:
-        return json.dumps({"error": f"Fehler beim API-Abruf: {str(e)}"})
+        return {"error": f"Fehler beim API-Abruf: {str(e)}"}
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather_data",
-            "description": "Ruft aktuelle Wetterdaten (Temperatur, Wind, Niederschlagswahrscheinlichkeit) für eine Stadt über die Open-Meteo API ab.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "Der Name der Stadt, z. B. Wien, Berlin, Hamburg"
-                    }
-                },
-                "required": ["city"]
-            }
-        }
-    }
-]
+# Hilfsfunktion: Stadt aus dem Text ermitteln
+def extract_city(text: str, client: Groq, model: str) -> str:
+    try:
+        res = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Nenne ausschließlich den Namen der gesuchten Stadt aus dem Text als einzelnes Wort (z.B. 'Wien', 'München', 'Berlin'). Wenn keine Stadt oder kein Ort genannt wurde, antworte NUR mit 'NONE'."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.0
+        )
+        found = res.choices[0].message.content.strip().replace(".", "").replace('"', "")
+        return None if "none" in found.lower() else found
+    except Exception:
+        return None
 
-# --- 3. STREAMLIT SETUP & DYNAMISCHE MODELL-AUSWAHL ---
+# --- 3. STREAMLIT SETUP ---
 st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="centered")
 st.title("👔 Garderoben-Agent: Was ziehe ich an?")
-st.caption("Modul Digitalisierung (NRM 28) · Powered by Groq & Open-Meteo API")
+st.caption("Modul Digitalisierung (NRM 28) · Open-Meteo Live-API & Groq LLM")
 
 api_key = st.secrets.get("GROQ_API_KEY") if "GROQ_API_KEY" in st.secrets else None
 
@@ -90,87 +86,86 @@ if not api_key:
         api_key = st.text_input("Groq API Key eingeben:", type="password")
 
 if not api_key:
-    st.info("Bitte hinterlege deinen Groq API Key in den Streamlit Secrets.")
+    st.info("Bitte trage deinen Groq API Key in die Streamlit Secrets ein.")
     st.stop()
 
 client = Groq(api_key=api_key)
 
-# Dynamische Liste aller für deinen Key aktiven Modelle abfragen
+# Verfügbare Modelle ermitteln
 try:
     groq_models = [m.id for m in client.models.list().data if "whisper" not in m.id]
-except Exception as e:
-    groq_models = []
+except Exception:
+    groq_models = ["llama3-8b-8192"]
 
-# Bestes Standard-Modell ermitteln
 default_idx = 0
 for idx, name in enumerate(groq_models):
-    if any(k in name.lower() for k in ["llama-3", "llama3", "mixtral", "gemma"]):
+    if any(k in name.lower() for k in ["llama-3", "llama3", "mixtral"]):
         default_idx = idx
         break
 
 with st.sidebar:
     st.subheader("🤖 Modell-Status")
-    if groq_models:
-        selected_model = st.selectbox("Aktives LLM:", groq_models, index=default_idx)
-        st.success(f"Aktiv: `{selected_model}`")
-    else:
-        selected_model = "llama3-8b-8192"
-        st.caption("Standardmodell aktiv.")
+    selected_model = st.selectbox("Aktives LLM:", groq_models, index=default_idx)
+    st.success(f"Aktiv: `{selected_model}`")
 
-# Historie initialisieren
+# Session State initialisieren
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+if "last_weather" not in st.session_state:
+    st.session_state.last_weather = None
 
-# Chatverlauf anzeigen
+# Bisherigen Chatverlauf anzeigen
 for msg in st.session_state.messages:
     role = msg.get("role")
     content = msg.get("content")
-    if role in ["user", "assistant"] and content:
+    if role in ["user", "assistant"] and content and not content.startswith("[SYSTEM-WETTER"):
         with st.chat_message(role):
             st.markdown(content)
 
-# --- 4. INTERAKTION ---
+# --- 4. CHAT-INTERAKTION ---
 user_input = st.chat_input("z. B.: Ich fahre heute nach Wien in die Uni. Was ziehe ich an?")
 
 if user_input:
+    # 1. Nutzereingabe anzeigen
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Prüfe Wetter via Open-Meteo und erstelle Outfit..."):
-            response = client.chat.completions.create(
-                model=selected_model,
-                messages=st.session_state.messages,
-                tools=TOOLS,
-                tool_choice="auto"
-            )
-            response_message = response.choices[0].message
-
-            # Falls Groq das Wetter-Tool anfordert
-            if response_message.tool_calls:
-                st.session_state.messages.append(response_message.model_dump())
-                for tool_call in response_message.tool_calls:
-                    fn_name = tool_call.function.name
-                    fn_args = json.loads(tool_call.function.arguments)
-                    
-                    if fn_name == "get_weather_data":
-                        tool_output = get_weather_data(city=fn_args.get("city"))
-                        st.session_state.messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": fn_name,
-                            "content": tool_output
-                        })
+        with st.spinner("Prüfe Eingabe & Wetterdaten via Open-Meteo..."):
+            try:
+                # Prüfen, ob eine Stadt genannt wurde
+                city = extract_city(user_input, client, selected_model)
                 
-                # Zweiter Durchlauf mit den abgerufenen Wetterdaten
-                second_response = client.chat.completions.create(
-                    model=selected_model,
-                    messages=st.session_state.messages
-                )
-                final_text = second_response.choices[0].message.content
-            else:
-                final_text = response_message.content
+                # Wenn eine Stadt erkannt wurde: Echte Open-Meteo API anfragen
+                if city:
+                    weather_info = get_weather_data(city)
+                    if "error" not in weather_info:
+                        st.session_state.last_weather = weather_info
+                        st.info(
+                            f"📡 **Open-Meteo Live-Wetterdaten für {weather_info['ort']}:** "
+                            f"{weather_info['temperatur']} °C | Wind: {weather_info['wind']} km/h | Regenrisiko: {weather_info['regen']} %"
+                        )
+                        # Wetterdaten verbindlich in den Kontext übergeben
+                        weather_prompt = (
+                            f"[SYSTEM-WETTERDATEN VON OPEN-METEO API]: "
+                            f"Ort: {weather_info['ort']}, "
+                            f"Temperatur: {weather_info['temperatur']} °C, "
+                            f"Wind: {weather_info['wind']} km/h, "
+                            f"Niederschlagswahrscheinlichkeit: {weather_info['regen']}%. "
+                            f"Nutze genau diese Werte!"
+                        )
+                        st.session_state.messages.append({"role": "system", "content": weather_prompt})
 
-            st.markdown(final_text)
-            st.session_state.messages.append({"role": "assistant", "content": final_text})
+                # Antwort vom LLM generieren
+                response = client.chat.completions.create(
+                    model=selected_model,
+                    messages=st.session_state.messages,
+                    temperature=0.3
+                )
+                final_text = response.choices[0].message.content
+                st.markdown(final_text)
+                st.session_state.messages.append({"role": "assistant", "content": final_text})
+
+            except Exception as err:
+                st.error(f"⚠️ Fehler beim Generieren: {str(err)}")
