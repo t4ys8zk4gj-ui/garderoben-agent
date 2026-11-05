@@ -7,44 +7,47 @@ from groq import Groq
 SYSTEM_PROMPT = """
 Du bist der „Garderoben-Agent: Was ziehe ich an?“. Du unterstützt Studierende und Berufstätige dabei, in unter zwei Minuten eine passende Outfit-Auswahl auf Basis des aktuellen Wetters am Zielort und des Tagesanlasses zu treffen.
 
-WICHTIGE SPRACHREGELN:
-- Antworte ausschließlich in natürlichem, grammatikalisch einwandfreiem Standarddeutsch (Hochdeutsch).
-- Sprich die Person durchgehend mit dem informellen „du“ an (kein „Sie“, kein „Ihr“).
-- Verwende niemals wörtliche Übersetzungen aus dem Englischen oder erfundene Begriffe.
+SPRACHREGELN:
+- Antworte in natürlichem, fehlerfreiem Hochdeutsch.
+- Duze die Person durchgehend und freundlich.
+- Wiederhole dich nicht.
 
-Zwingender Transparenzhinweis:
-Beginne deine allererste Chat-Antwort IMMER zwingend mit folgendem Wortlaut:
+TRANSPARENZHINWEIS:
+Beginne deine allererste Antwort im Chat IMMER zwingend mit folgendem Wortlaut:
 „ℹ️ **Transparenzhinweis:** Ich bin ein KI-System zur Unterstützung deiner morgendlichen Outfit-Wahl. Meine Vorschläge basieren auf Live-Wetterdaten und festen Bekleidungsregeln – die endgültige Entscheidung triffst immer du selbst.“
 
-Workflow & Kriterien:
-1. Prüfe, ob Zielort und Anlass (Uni, Arbeit oder Freizeit) vorliegen. Fehlt etwas, frage gezielt und kurz danach. Rate niemals!
+WORKFLOW:
+1. Prüfe, ob Zielort und Anlass (Uni, Arbeit oder Freizeit) vorliegen. Fehlt ein Punkt, frage gezielt und kurz nach. Rate niemals!
 2. Leite den Style ab:
    - Freizeit -> locker & funktional
    - Uni -> locker bis alltagstauglich (Smart-Everyday)
    - Arbeit -> gepflegt bis formell (Business Casual / Formell)
-3. Nutze für das Wetter AUSSCHLIESSLICH die Werte aus [SYSTEM-WETTERDATEN VON OPEN-METEO API]. Erfinde niemals eigene Werte.
-4. Schlage maximal 3 vollständige Outfit-Varianten vor (Variante 1, Variante 2, Variante 3) – KEINE Marken, nur neutrale Kategorien.
-5. Genau 1 Begründungssatz pro Variante, der Temperatur, Wind, Regen, Anlass und Style logisch verknüpft.
+3. Nutze für das Wetter AUSSCHLIESSLICH die im Prompt übergebenen Live-Wetterdaten von Open-Meteo. Erfinde niemals eigene Werte.
+4. Schlage genau 2 bis maximal 3 vollständige Outfit-Varianten aus neutralen Kategorien vor (Oberteile, Mid-Layer, Jacken, Hosen, Schuhe - keine Marken).
+5. Genau 1 Begründungssatz pro Variante: Verknüpfe Temperatur, Wind, Regen, Anlass und Style in diesem Satz.
 6. Schließe deine Nachricht IMMER exakt mit der Frage: „Passt das zusammen?“
-7. Maximal 3 Feedback-Durchläufe. Danach übergibst du die Entscheidung an die Person.
+7. Maximal 3 Durchläufe. Danach übergibst du die Entscheidung an die Person.
 
-HALTE DICH STRIKT AN DIESES AUSGABEFORMAT:
+NICHT-ZIELE (STRIKT ABLEHNEN):
+Lehne folgende Anfragen freundlich, aber bestimmt unter Verweis auf deine Rolle ab:
+1. Keine Marken- oder Kaufberatung: Nenne niemals Markennamen, Shops, Preise oder Kauflinks.
+2. Keine Fotos oder Körperdaten: Werte niemals hochgeladene Bilder, Körpergrößen, Gewichtsangaben oder Konfektionsgrößen aus.
+3. Keine dauerhafte Speicherung: Speichere keine Daten über die aktuelle Sitzung hinaus.
+4. Keine Stilberatung außerhalb von Uni, Arbeit und Freizeit: Lehne Beratungen für Hochzeiten, Kostümpartys, Galas oder allgemeine Typ-/Farbberatung ab.
 
+STRUKTUR DER ANTWORT:
 Kurzüberblick: [Ort] | [Temperatur] °C, [Wind] km/h Wind, [Regen]% Regenrisiko | Anlass: [Anlass] (Style: [Style])
 
-• **Variante 1 (Klassisch/Standard):** [Konkrete Zusammenstellung: Oberteil + Schicht + Hose + Schuhe + Extra]
-*Begründung:* [Genau ein Satz, der Wetter, Anlass und Style verbindet.]
+• **Variante 1 (Alltagstauglich):** [Konkrete Teile: Oberteil, Schicht, Beinkleid, Schuhe, Jacke]
+*Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
 
-• **Variante 2 (Wärmer / Mehr Schichten):** [Konkrete Zusammenstellung]
-*Begründung:* [Genau ein Satz, der Wetter, Anlass und Style verbindet.]
+• **Variante 2 (Zwiebelprinzip / Wärmer):** [Konkrete Teile]
+*Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
 
-• **Variante 3 (Funktional / Alternativ):** [Konkrete Zusammenstellung]
-*Begründung:* [Genau ein Satz, der Wetter, Anlass und Style verbindet.]
+• **Variante 3 (Alternative):** [Konkrete Teile]
+*Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
 
 Passt das zusammen?
-
-Nicht-Ziele (strikt ablehnen):
-Keine Marken- oder Kaufberatung, keine Analyse von Fotos oder Körpermaßen/Größen, keine dauerhafte Speicherung, keine Stilberatung außerhalb von Uni/Arbeit/Freizeit.
 """
 
 # --- 2. OPEN-METEO WETTER-ABRUF ---
@@ -82,10 +85,11 @@ def extract_city(text: str, client: Groq, model: str) -> str:
         res = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "Nenne ausschließlich den Namen der gesuchten Stadt aus dem Text als einzelnes Wort (z.B. 'Wien', 'München', 'Berlin'). Wenn keine Stadt oder kein Ort genannt wurde, antworte NUR mit 'NONE'."},
+                {"role": "system", "content": "Antworte NUR mit dem Namen der Stadt aus dem Text (z.B. 'Wien', 'Berlin'). Wenn kein Ort genannt ist, antworte NUR mit 'NONE'."},
                 {"role": "user", "content": text}
             ],
-            temperature=0.0
+            temperature=0.0,
+            max_tokens=15
         )
         found = res.choices[0].message.content.strip().replace(".", "").replace('"', '').replace("'", "")
         if "none" in found.lower() or len(found) > 30:
@@ -94,10 +98,10 @@ def extract_city(text: str, client: Groq, model: str) -> str:
     except Exception:
         return None
 
-# --- 3. STREAMLIT SETUP & MODELLFILTER ---
+# --- 3. STREAMLIT SETUP ---
 st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="centered")
 st.title("👔 Garderoben-Agent: Was ziehe ich an?")
-st.caption("Modul Digitalisierung (NRM 28) · Open-Meteo Live-API & Groq LLM")
+st.caption("Modul Digitalisierung (NRM 28) · Open-Meteo Live-API & Groq")
 
 api_key = st.secrets.get("GROQ_API_KEY") if "GROQ_API_KEY" in st.secrets else None
 
@@ -106,12 +110,11 @@ if not api_key:
         api_key = st.text_input("Groq API Key eingeben:", type="password")
 
 if not api_key:
-    st.info("Bitte trage deinen Groq API Key in die Streamlit Secrets ein.")
+    st.info("Bitte hinterlege deinen Groq API Key in den Streamlit Secrets.")
     st.stop()
 
 client = Groq(api_key=api_key)
 
-# Filter: Nur reine Chat-/Textmodelle zulassen (keine Audio-, Vision- oder Terms-Modelle)
 EXCLUDE = ["whisper", "orpheus", "guard", "vision", "canopy", "tts", "embed", "safeguard"]
 try:
     all_models = [m.id for m in client.models.list().data]
@@ -119,14 +122,11 @@ try:
 except Exception:
     valid_models = []
 
-# Bekannte stabile Standardmodelle bevorzugen
 PREFERRED_ORDER = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "llama3-8b-8192",
-    "llama3-70b-8192",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768"
+    "gemma2-9b-it"
 ]
 
 default_idx = 0
@@ -141,18 +141,16 @@ with st.sidebar:
         selected_model = st.selectbox("Aktives Text-LLM:", valid_models, index=default_idx)
         st.success(f"Aktiv: `{selected_model}`")
     else:
-        selected_model = "llama3-8b-8192"
+        selected_model = "llama-3.1-8b-instant"
         st.caption("Standardmodell aktiv.")
 
-# Historie initialisieren
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-# Chatverlauf rendern
 for msg in st.session_state.messages:
     role = msg.get("role")
     content = msg.get("content")
-    if role in ["user", "assistant"] and content and not content.startswith("[SYSTEM-WETTER"):
+    if role in ["user", "assistant"] and content:
         with st.chat_message(role):
             st.markdown(content)
 
@@ -160,43 +158,49 @@ for msg in st.session_state.messages:
 user_input = st.chat_input("z. B.: Ich fahre heute nach Wien in die Uni. Was ziehe ich an?")
 
 if user_input:
+    city = extract_city(user_input, client, selected_model)
+    weather_context = ""
+    
+    if city:
+        weather_info = get_weather_data(city)
+        if "error" not in weather_info:
+            st.info(
+                f"📡 **Open-Meteo Live-Wetterdaten für {weather_info['ort']}:** "
+                f"{weather_info['temperatur']} °C | Wind: {weather_info['wind']} km/h | Regenrisiko: {weather_info['regen']} %"
+            )
+            weather_context = (
+                f"\n[AKTUELLE OPEN-METEO WETTERWERTE FÜR DIESE ANTWORT: "
+                f"Ort: {weather_info['ort']}, "
+                f"Temperatur: {weather_info['temperatur']} °C, "
+                f"Wind: {weather_info['wind']} km/h, "
+                f"Niederschlagswahrscheinlichkeit: {weather_info['regen']}%. "
+                f"Verwende genau diese Zahlen!]"
+            )
+
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Prüfe Wetterdaten via Open-Meteo & erstelle Outfit..."):
-            try:
-                # 1. Stadt erkennen
-                city = extract_city(user_input, client, selected_model)
-                
-                # 2. Wetter abrufen
-                if city:
-                    weather_info = get_weather_data(city)
-                    if "error" not in weather_info:
-                        st.info(
-                            f"📡 **Open-Meteo Live-Wetterdaten für {weather_info['ort']}:** "
-                            f"{weather_info['temperatur']} °C | Wind: {weather_info['wind']} km/h | Regenrisiko: {weather_info['regen']} %"
-                        )
-                        weather_prompt = (
-                            f"[SYSTEM-WETTERDATEN VON OPEN-METEO API]: "
-                            f"Ort: {weather_info['ort']}, "
-                            f"Temperatur: {weather_info['temperatur']} °C, "
-                            f"Wind: {weather_info['wind']} km/h, "
-                            f"Niederschlagswahrscheinlichkeit: {weather_info['regen']}%. "
-                            f"Nutze genau diese Werte!"
-                        )
-                        st.session_state.messages.append({"role": "system", "content": weather_prompt})
+    api_messages = []
+    for m in st.session_state.messages:
+        api_messages.append({"role": m["role"], "content": m["content"]})
+    
+    if weather_context:
+        api_messages[-1]["content"] += weather_context
 
-                # 3. Antwort generieren
+    with st.chat_message("assistant"):
+        with st.spinner("Erstelle Outfit-Vorschlag..."):
+            try:
                 response = client.chat.completions.create(
                     model=selected_model,
-                    messages=st.session_state.messages,
-                    temperature=0.3
+                    messages=api_messages,
+                    temperature=0.6,
+                    max_tokens=700,
+                    frequency_penalty=0.5,
+                    presence_penalty=0.3
                 )
-                final_text = response.choices[0].message.content
+                final_text = response.choices[0].message.content.strip()
                 st.markdown(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text})
-
             except Exception as err:
                 st.error(f"⚠️ Fehler: {str(err)}")
