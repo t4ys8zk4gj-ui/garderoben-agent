@@ -27,9 +27,6 @@ Nicht-Ziele (strikt ablehnen):
 Keine Marken- oder Kaufberatung, keine Analyse von Fotos oder Körpermaßen/Größen, keine dauerhafte Speicherung, keine Stilberatung außerhalb von Uni/Arbeit/Freizeit.
 """
 
-# Universell verfügbares Groq-Modell mit Tool-Support
-MODEL_NAME = "llama-3.1-8b-instant"
-
 # --- 2. OPEN-METEO WETTER-ABRUF ---
 def get_weather_data(city: str) -> str:
     try:
@@ -81,7 +78,7 @@ TOOLS = [
     }
 ]
 
-# --- 3. STREAMLIT SETUP ---
+# --- 3. STREAMLIT SETUP & DYNAMISCHE MODELL-AUSWAHL ---
 st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="centered")
 st.title("👔 Garderoben-Agent: Was ziehe ich an?")
 st.caption("Modul Digitalisierung (NRM 28) · Powered by Groq & Open-Meteo API")
@@ -91,17 +88,40 @@ api_key = st.secrets.get("GROQ_API_KEY") if "GROQ_API_KEY" in st.secrets else No
 if not api_key:
     with st.sidebar:
         api_key = st.text_input("Groq API Key eingeben:", type="password")
-        st.caption("Kostenlos auf console.groq.com/keys")
 
 if not api_key:
-    st.info("Bitte trage deinen Groq API Key in die Streamlit Secrets ein.")
+    st.info("Bitte hinterlege deinen Groq API Key in den Streamlit Secrets.")
     st.stop()
 
 client = Groq(api_key=api_key)
 
+# Dynamische Liste aller für deinen Key aktiven Modelle abfragen
+try:
+    groq_models = [m.id for m in client.models.list().data if "whisper" not in m.id]
+except Exception as e:
+    groq_models = []
+
+# Bestes Standard-Modell ermitteln
+default_idx = 0
+for idx, name in enumerate(groq_models):
+    if any(k in name.lower() for k in ["llama-3", "llama3", "mixtral", "gemma"]):
+        default_idx = idx
+        break
+
+with st.sidebar:
+    st.subheader("🤖 Modell-Status")
+    if groq_models:
+        selected_model = st.selectbox("Aktives LLM:", groq_models, index=default_idx)
+        st.success(f"Aktiv: `{selected_model}`")
+    else:
+        selected_model = "llama3-8b-8192"
+        st.caption("Standardmodell aktiv.")
+
+# Historie initialisieren
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
+# Chatverlauf anzeigen
 for msg in st.session_state.messages:
     role = msg.get("role")
     content = msg.get("content")
@@ -109,7 +129,7 @@ for msg in st.session_state.messages:
         with st.chat_message(role):
             st.markdown(content)
 
-# --- 4. CHAT-LOGIK ---
+# --- 4. INTERAKTION ---
 user_input = st.chat_input("z. B.: Ich fahre heute nach Wien in die Uni. Was ziehe ich an?")
 
 if user_input:
@@ -120,30 +140,32 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Prüfe Wetter via Open-Meteo und erstelle Outfit..."):
             response = client.chat.completions.create(
-                model=MODEL_NAME,
+                model=selected_model,
                 messages=st.session_state.messages,
                 tools=TOOLS,
                 tool_choice="auto"
             )
             response_message = response.choices[0].message
 
+            # Falls Groq das Wetter-Tool anfordert
             if response_message.tool_calls:
                 st.session_state.messages.append(response_message.model_dump())
                 for tool_call in response_message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
+                    fn_name = tool_call.function.name
+                    fn_args = json.loads(tool_call.function.arguments)
                     
-                    if function_name == "get_weather_data":
-                        tool_output = get_weather_data(city=function_args.get("city"))
+                    if fn_name == "get_weather_data":
+                        tool_output = get_weather_data(city=fn_args.get("city"))
                         st.session_state.messages.append({
                             "tool_call_id": tool_call.id,
                             "role": "tool",
-                            "name": function_name,
+                            "name": fn_name,
                             "content": tool_output
                         })
                 
+                # Zweiter Durchlauf mit den abgerufenen Wetterdaten
                 second_response = client.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=selected_model,
                     messages=st.session_state.messages
                 )
                 final_text = second_response.choices[0].message.content
