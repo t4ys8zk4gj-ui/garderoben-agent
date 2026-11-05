@@ -27,6 +27,9 @@ Nicht-Ziele (strikt ablehnen):
 Keine Marken- oder Kaufberatung, keine Analyse von Fotos oder Körpermaßen/Größen, keine dauerhafte Speicherung, keine Stilberatung außerhalb von Uni/Arbeit/Freizeit.
 """
 
+# Universell verfügbares Groq-Modell mit Tool-Support
+MODEL_NAME = "llama-3.1-8b-instant"
+
 # --- 2. OPEN-METEO WETTER-ABRUF ---
 def get_weather_data(city: str) -> str:
     try:
@@ -58,7 +61,6 @@ def get_weather_data(city: str) -> str:
     except Exception as e:
         return json.dumps({"error": f"Fehler beim API-Abruf: {str(e)}"})
 
-# Definition des Tools für Groq
 TOOLS = [
     {
         "type": "function",
@@ -97,11 +99,9 @@ if not api_key:
 
 client = Groq(api_key=api_key)
 
-# Nachrichten-Historie initialisieren
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-# Chat-Verlauf rendern
 for msg in st.session_state.messages:
     role = msg.get("role")
     content = msg.get("content")
@@ -113,23 +113,20 @@ for msg in st.session_state.messages:
 user_input = st.chat_input("z. B.: Ich fahre heute nach Wien in die Uni. Was ziehe ich an?")
 
 if user_input:
-    # Nutzernachricht anzeigen und speichern
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Assistenten-Antwort verarbeiten
     with st.chat_message("assistant"):
         with st.spinner("Prüfe Wetter via Open-Meteo und erstelle Outfit..."):
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=MODEL_NAME,
                 messages=st.session_state.messages,
                 tools=TOOLS,
                 tool_choice="auto"
             )
             response_message = response.choices[0].message
 
-            # Tool Call ausführen, falls das Modell Wetterdaten anfordert
             if response_message.tool_calls:
                 st.session_state.messages.append(response_message.model_dump())
                 for tool_call in response_message.tool_calls:
@@ -146,7 +143,7 @@ if user_input:
                         })
                 
                 second_response = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model=MODEL_NAME,
                     messages=st.session_state.messages
                 )
                 final_text = second_response.choices[0].message.content
