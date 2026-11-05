@@ -101,5 +101,57 @@ client = Groq(api_key=api_key)
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-# Chat-Verlauf rendern (System-Prompt ausblenden)
-for msg
+# Chat-Verlauf rendern
+for msg in st.session_state.messages:
+    role = msg.get("role")
+    content = msg.get("content")
+    if role in ["user", "assistant"] and content:
+        with st.chat_message(role):
+            st.markdown(content)
+
+# --- 4. CHAT-LOGIK ---
+user_input = st.chat_input("z. B.: Ich fahre heute nach Wien in die Uni. Was ziehe ich an?")
+
+if user_input:
+    # Nutzernachricht anzeigen und speichern
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # Assistenten-Antwort verarbeiten
+    with st.chat_message("assistant"):
+        with st.spinner("Prüfe Wetter via Open-Meteo und erstelle Outfit..."):
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=st.session_state.messages,
+                tools=TOOLS,
+                tool_choice="auto"
+            )
+            response_message = response.choices[0].message
+
+            # Tool Call ausführen, falls das Modell Wetterdaten anfordert
+            if response_message.tool_calls:
+                st.session_state.messages.append(response_message.model_dump())
+                for tool_call in response_message.tool_calls:
+                    function_name = tool_call.function.name
+                    function_args = json.loads(tool_call.function.arguments)
+                    
+                    if function_name == "get_weather_data":
+                        tool_output = get_weather_data(city=function_args.get("city"))
+                        st.session_state.messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": tool_output
+                        })
+                
+                second_response = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=st.session_state.messages
+                )
+                final_text = second_response.choices[0].message.content
+            else:
+                final_text = response_message.content
+
+            st.markdown(final_text)
+            st.session_state.messages.append({"role": "assistant", "content": final_text})
