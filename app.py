@@ -1,11 +1,11 @@
-import json
+import re
 import requests
 import streamlit as st
 from groq import Groq
 
 # --- 1. SYSTEM-PROMPT & REGELN (NRM 28) ---
 SYSTEM_PROMPT = """
-Du bist der „Garderoben-Agent: Was ziehe ich an?“. Du unterstützt Studierende und Berufstätige dabei, in unter zwei Minuten eine passende Outfit-Auswahl auf Basis des aktuellen Wetters am Zielort und des Tagesanlasses zu treffen.
+Du bist der „Garderoben-Agent: Was ziehe ich an?“. Du unterstützt Studierende und Berufstätige dabei, in unter zwei Minuten eine passende Outfit-Auswahl auf Basis des Wetters am Zielort (inklusive Uhrzeit) und des Tagesanlasses zu treffen.
 
 SPRACHREGELN:
 - Antworte in natürlichem, fehlerfreiem Hochdeutsch.
@@ -16,45 +16,100 @@ TRANSPARENZHINWEIS:
 Beginne deine allererste Antwort im Chat IMMER zwingend mit folgendem Wortlaut:
 „ℹ️ **Transparenzhinweis:** Ich bin ein KI-System zur Unterstützung deiner morgendlichen Outfit-Wahl. Meine Vorschläge basieren auf Live-Wetterdaten und festen Bekleidungsregeln – die endgültige Entscheidung triffst immer du selbst.“
 
+UNTERSCHEIDUNG DAMEN- UND HERRENBEKLEIDUNG (MARKENFREI):
+Berücksichtige die Unterschiede zwischen Damen- und Herrenbekleidung:
+- **Herrenbekleidung:**
+  - Freizeit: T-Shirt, Poloshirt, Hoodie, Sweatshirt, Jeans, Cargohose, Shorts, Sneaker, derbe Boots, Windbreaker, Regenjacke, Winterparka.
+  - Uni: T-Shirt, Langarmshirt, Strickpullover, Cardigan, Freizeithemd, Jeans, Chino, Sneaker, Chelsea-Boots, Übergangsjacke.
+  - Arbeit: Klassisches Hemd, Feinstrickpullover, Sakko, Anzughose, gepflegte Chino, Lederschnürschuhe, Loafer, Trenchcoat, Wollmantel.
+- **Damenbekleidung:**
+  - Freizeit: T-Shirt, Top, Hoodie, Strickpullover, Jeans, Freizeithose, Leggings, Sommerrock, Sneaker, Schnürboots, Regenjacke, Steppjacke.
+  - Uni: Blusenshirt, Rollkragenpullover, Cardigan, Jeans, Stoffhose, Midi-Rock (bei Kälte mit Strumpfhose), Sneaker, Stiefeletten, Trenchcoat/Übergangsjacke.
+  - Arbeit: Bluse, Feinstrickoberteil, Blazer, Stoffhose/Bundfaltenhose, Bleistiftrock/Kostümrock (ggf. mit Strumpfhose), Loafer, Stiefeletten, Pumps, Trenchcoat, eleganter Wollmantel.
+- **Regel zur Ausgabe:** Wenn die Person angibt, ob sie Damen- oder Herrenbekleidung sucht, schlage nur diese Kategorie vor. Macht sie keine Angabe, führe in jeder Variante beides getrennt auf („👚 Damen: ... | 👔 Herren: ...“).
+
 WORKFLOW & REGELN:
 1. Prüfe, ob Zielort und Anlass (Uni, Arbeit oder Freizeit) vorliegen.
    - Fehlt der Ort? Frage kurz und gezielt nach dem Ort.
    - Fehlt der Anlass? Frage kurz und gezielt nach dem Anlass.
-   - WICHTIG: Frage den Nutzer NIEMALS nach Wetterwerten (Temperatur, Wind, Regen)! Der Nutzer kennt diese Werte nicht. Das Wetter kommt ausschließlich automatisch aus dem System.
+   - WICHTIG: Frage den Nutzer NIEMALS nach Wetterwerten! Das Wetter kommt automatisch aus dem System.
 2. Leite den Style ab:
    - Freizeit -> locker & funktional
    - Uni -> locker bis alltagstauglich (Smart-Everyday)
    - Arbeit -> gepflegt bis formell (Business Casual / Formell)
-3. Nutze für das Wetter AUSSCHLIESSLICH die im Prompt übergebenen Live-Wetterdaten von Open-Meteo. Erfinde niemals eigene Werte.
-4. Schlage genau 2 bis maximal 3 vollständige Outfit-Varianten aus neutralen Kategorien vor (Oberteile, Mid-Layer, Jacken, Hosen, Schuhe - keine Marken).
-5. Genau 1 Begründungssatz pro Variante: Verknüpfe Temperatur, Wind, Regen, Anlass und Style in diesem Satz.
+3. Nutze für das Wetter und die Uhrzeit AUSSCHLIESSLICH die übergebenen Open-Meteo-Werte. Erfinde niemals eigene Werte.
+4. Schlage genau 2 bis maximal 3 vollständige Outfit-Varianten vor (keine Marken).
+5. Genau 1 Begründungssatz pro Variante: Verknüpfe Zeitpunkt/Wetterwerte (Temperatur, Wind, Regen), Anlass und Style logisch in diesem Satz.
 6. Schließe deine Nachricht IMMER exakt mit der Frage: „Passt das zusammen?“
-7. Maximal 3 Durchläufe (Zähle Durchläufe intern mit). Übergib danach oder bei Zustimmung die Entscheidung an die Person.
+7. Maximal 3 Durchläufe. Übergib danach oder bei Zustimmung die Entscheidung an die Person.
 
 NICHT-ZIELE (STRIKT ABLEHNEN):
-Lehne folgende Anfragen freundlich, aber bestimmt unter Verweis auf deine Rolle ab:
-1. Keine Marken- oder Kaufberatung: Nenne niemals Markennamen, Shops, Preise oder Kauflinks.
-2. Keine Fotos oder Körperdaten: Werte niemals Bilder, Körpergrößen, Gewichtsangaben oder Konfektionsgrößen aus.
-3. Keine dauerhafte Speicherung: Speichere keine Daten über die aktuelle Sitzung hinaus.
-4. Keine Stilberatung außerhalb von Uni, Arbeit und Freizeit: Lehne Beratungen für Hochzeiten, Partys oder Galas ab.
+1. Keine Marken- oder Kaufberatung (keine Marken, Shops, Preise).
+2. Keine Fotos oder Körpermaße/Konfektionsgrößen auswerten.
+3. Keine dauerhafte Speicherung über die Sitzung hinaus.
+4. Keine Stilberatung außerhalb von Uni, Arbeit und Freizeit (keine Hochzeiten, Galas, Kostüme).
 
 STRUKTUR DER OUTFIT-ANTWORT:
-Kurzüberblick: [Ort] | [Temperatur] °C, [Wind] km/h Wind, [Regen]% Regenrisiko | Anlass: [Anlass] (Style: [Style])
+Kurzüberblick: [Ort] ([Zeitpunkt]) | [Temperatur] °C, [Wind] km/h Wind, [Regen]% Regenrisiko | Anlass: [Anlass] (Style: [Style])
 
-• **Variante 1 (Alltagstauglich):** [Konkrete Zusammenstellung: Oberteil + Schicht + Hose + Schuhe + Jacke]
-*Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
+• **Variante 1 (Alltagstauglich / Klassisch):**
+  - 👚 Damen: [Oberteil, Schicht, Beinkleid, Schuhe, Jacke]
+  - 👔 Herren: [Oberteil, Schicht, Beinkleid, Schuhe, Jacke]
+  *(Hinweis: Falls Damen oder Herren explizit gewünscht wurde, zeige nur die gewünschte Zeile)*
+  *Begründung:* [Genau ein logischer Satz zu Wetter zur genannten Uhrzeit, Anlass und Style.]
 
-• **Variante 2 (Zwiebelprinzip / Wärmer):** [Konkrete Zusammenstellung]
-*Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
+• **Variante 2 (Zwiebelprinzip / Wärmer):**
+  - 👚 Damen: [...]
+  - 👔 Herren: [...]
+  *Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
 
-• **Variante 3 (Alternative):** [Konkrete Zusammenstellung]
-*Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
+• **Variante 3 (Funktional / Alternativ):**
+  - 👚 Damen: [...]
+  - 👔 Herren: [...]
+  *Begründung:* [Genau ein logischer Satz zu Wetter, Anlass und Style.]
 
 Passt das zusammen?
 """
 
-# --- 2. OPEN-METEO WETTER-ABRUF & ROBUSTE ORTS-ERKENNUNG ---
-def get_weather_data(city: str) -> dict:
+# --- 2. ZEIT- & ORTSERKENNUNG SOWIE OPEN-METEO API ---
+def parse_time_from_text(text: str) -> tuple:
+    """
+    Erkennt Zeitangaben im Text.
+    Gibt (day_offset, hour, label_found) zurück.
+    day_offset: 0 = Heute, 1 = Morgen
+    hour: 0-23 oder None (falls aktuelle Uhrzeit genutzt werden soll)
+    """
+    t = text.lower()
+    day_offset = 1 if ("morgen" in t and "heute morgen" not in t and "guten morgen" not in t) else 0
+    hour = None
+
+    # 1. Explizite Uhrzeit suchen, z. B. "18 Uhr", "18:00", "um 8 uhr"
+    match = re.search(r'\b([01]?\d|2[0-3])(?::(\d{2}))?\s*uhr\b', t)
+    if not match:
+        match = re.search(r'\bum\s+([01]?\d|2[0-3])(?::(\d{2}))?\b', t)
+    
+    if match:
+        hour = int(match.group(1))
+    else:
+        # 2. Tageszeiten-Schlüsselwörter prüfen
+        if any(w in t for w in ["früh", "heute morgen", "morgens", "vormittag", "vormittags"]):
+            hour = 8
+        elif any(w in t for w in ["mittag", "mittags"]):
+            hour = 12
+        elif any(w in t for w in ["nachmittag", "nachmittags"]):
+            hour = 15
+        elif any(w in t for w in ["abend", "abends"]):
+            hour = 19
+        elif any(w in t for w in ["nacht", "nachts"]):
+            hour = 22
+        elif day_offset == 1:
+            # Wenn nur "morgen" ohne Uhrzeit genannt wurde -> 09:00 Uhr als Standard
+            hour = 9
+
+    return day_offset, hour
+
+def get_weather_data(city: str, day_offset: int = 0, hour: int = None) -> dict:
+    """Ruft entweder aktuelle Wetterdaten oder stundengenaue Vorhersagen von Open-Meteo ab."""
     try:
         clean_city = city.strip(".,!?:;\"'()[]{}")
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={clean_city}&count=1&language=de&format=json"
@@ -70,13 +125,34 @@ def get_weather_data(city: str) -> dict:
         weather_url = (
             f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
             f"&current=temperature_2m,wind_speed_10m"
+            f"&hourly=temperature_2m,precipitation_probability,wind_speed_10m"
             f"&daily=precipitation_probability_max"
-            f"&timezone=auto&forecast_days=1"
+            f"&timezone=auto&forecast_days=2"
         )
         w_res = requests.get(weather_url, timeout=5).json()
         
+        # Fall A: Spezifische Uhrzeit / Tageszeit wurde genannt -> Hourly Forecast nutzen
+        if hour is not None:
+            idx = day_offset * 24 + hour
+            hourly_temps = w_res["hourly"]["temperature_2m"]
+            if idx >= len(hourly_temps):
+                idx = len(hourly_temps) - 1
+                
+            day_str = "Morgen" if day_offset == 1 else "Heute"
+            time_label = f"{day_str}, {hour:02d}:00 Uhr"
+            
+            return {
+                "ort": resolved_name,
+                "zeitpunkt": time_label,
+                "temperatur": w_res["hourly"]["temperature_2m"][idx],
+                "wind": w_res["hourly"]["wind_speed_10m"][idx],
+                "regen": w_res["hourly"]["precipitation_probability"][idx]
+            }
+        
+        # Fall B: Keine Uhrzeit genannt -> Aktuelles Live-Wetter nutzen
         return {
             "ort": resolved_name,
+            "zeitpunkt": "Aktuell (Jetzt)",
             "temperatur": w_res["current"]["temperature_2m"],
             "wind": w_res["current"]["wind_speed_10m"],
             "regen": w_res["daily"]["precipitation_probability_max"][0]
@@ -84,9 +160,8 @@ def get_weather_data(city: str) -> dict:
     except Exception as e:
         return {"error": f"Fehler beim API-Abruf: {str(e)}"}
 
-def find_weather(text: str, client: Groq, model: str) -> dict:
-    """Findet zuverlässig Wetterdaten aus dem Text via LLM und direktem Geocoding-Fallback."""
-    # 1. Schnelle LLM-Extraktion
+def detect_city_name(text: str, client: Groq, model: str) -> str:
+    """Extrahiert den Stadtnamen via LLM oder Wort-Fallback."""
     try:
         res = client.chat.completions.create(
             model=model,
@@ -104,28 +179,32 @@ def find_weather(text: str, client: Groq, model: str) -> dict:
         raw = raw.strip(".,!?:;\"'()[]{}")
         
         if "none" not in raw.lower() and len(raw) < 25:
-            data = get_weather_data(raw)
-            if "error" not in data:
-                return data
+            test = get_weather_data(raw)
+            if "error" not in test:
+                return test["ort"]
     except Exception:
         pass
 
-    # 2. Fallback: Wörter im Text direkt gegen Geocoding prüfen
-    STOPWORDS = {"Ich", "Du", "Er", "Sie", "Es", "Wir", "Ihr", "Was", "Wie", "Wo", "Heute", "Morgen", "Uni", "Arbeit", "Freizeit", "Büro", "Schule", "Outfit", "Anzug", "Kleidung", "Hörsaal"}
+    STOPWORDS = {
+        "Ich", "Du", "Er", "Sie", "Es", "Wir", "Ihr", "Was", "Wie", "Wo",
+        "Heute", "Morgen", "Abend", "Mittag", "Vormittag", "Nachmittag", "Nacht",
+        "Uhr", "Uni", "Arbeit", "Freizeit", "Büro", "Schule", "Outfit", "Mann",
+        "Frau", "Herren", "Damen", "Männer", "Frauen", "Kleidung", "Hörsaal"
+    }
     words = [w.strip(".,!?:;\"'()[]{}") for w in text.split()]
     candidates = [w for w in words if w and w[0].isupper() and w not in STOPWORDS and len(w) > 2]
     
     for candidate in candidates:
-        data = get_weather_data(candidate)
-        if "error" not in data:
-            return data
+        test = get_weather_data(candidate)
+        if "error" not in test:
+            return test["ort"]
 
     return None
 
 # --- 3. STREAMLIT SETUP ---
 st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="centered")
 st.title("👔 Garderoben-Agent: Was ziehe ich an?")
-st.caption("Modul Digitalisierung (NRM 28) · Open-Meteo Live-API & Groq")
+st.caption("Modul Digitalisierung (NRM 28) · Zeitgenaue Open-Meteo API & Damen-/Herren-Auswahl")
 
 api_key = st.secrets.get("GROQ_API_KEY") if "GROQ_API_KEY" in st.secrets else None
 
@@ -173,6 +252,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 if "current_weather" not in st.session_state:
     st.session_state.current_weather = None
+if "current_city" not in st.session_state:
+    st.session_state.current_city = None
 
 # Chat-Verlauf rendern
 for msg in st.session_state.messages:
@@ -183,47 +264,54 @@ for msg in st.session_state.messages:
             st.markdown(content)
 
 # --- 4. CHAT-INTERAKTION ---
-user_input = st.chat_input("z. B.: Ich fahre heute nach Wien in die Uni. Was ziehe ich an?")
+user_input = st.chat_input("z. B.: Ich muss heute um 18 Uhr in Wien zur Arbeit (Herren). Was ziehe ich an?")
 
 if user_input:
-    # 1. Prüfen, ob neuer Ort genannt wurde
-    weather = find_weather(user_input, client, selected_model)
-    if weather:
-        st.session_state.current_weather = weather
-        st.info(
-            f"📡 **Open-Meteo Live-Wetterdaten für {weather['ort']}:** "
-            f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
-        )
+    # 1. Stadt und gewünschte Uhrzeit aus der Frage ermitteln
+    detected_city = detect_city_name(user_input, client, selected_model)
+    day_offset, target_hour = parse_time_from_text(user_input)
+
+    if detected_city:
+        st.session_state.current_city = detected_city
+
+    # Wetter neu abrufen, wenn eine Stadt bekannt ist (entweder neu genannt oder mit neuer Zeitangabe)
+    if st.session_state.current_city and (detected_city or target_hour is not None or not st.session_state.current_weather):
+        weather = get_weather_data(st.session_state.current_city, day_offset, target_hour)
+        if "error" not in weather:
+            st.session_state.current_weather = weather
+            st.info(
+                f"📡 **Open-Meteo Wetterdaten für {weather['ort']} ({weather['zeitpunkt']}):** "
+                f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
+            )
 
     # 2. Nutzernachricht anzeigen und speichern
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 3. Kontext vorbereiten
+    # 3. Kontext für das Modell aufbereiten
     api_messages = []
     for m in st.session_state.messages:
         api_messages.append({"role": m["role"], "content": m["content"]})
 
-    # Wenn Wetterdaten vorliegen (aus dieser oder vorheriger Nachricht), anfügen
     if st.session_state.current_weather:
         w = st.session_state.current_weather
         weather_note = (
-            f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']}: "
+            f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']} zum Zeitpunkt '{w['zeitpunkt']}': "
             f"Temperatur: {w['temperatur']} °C, Wind: {w['wind']} km/h, Niederschlagsrisiko: {w['regen']}%. "
-            f"Verwende genau diese Zahlen im Kurzüberblick und in den Begründungen! Frage den Nutzer keinesfalls nach Wetterdaten!]"
+            f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen!]"
         )
         api_messages[-1]["content"] += weather_note
 
     # 4. Antwort generieren
     with st.chat_message("assistant"):
-        with st.spinner("Prüfe Outfit..."):
+        with st.spinner("Prüfe Outfit für Zeitpunkt & Anlass..."):
             try:
                 response = client.chat.completions.create(
                     model=selected_model,
                     messages=api_messages,
                     temperature=0.6,
-                    max_tokens=700,
+                    max_tokens=800,
                     frequency_penalty=0.5,
                     presence_penalty=0.3
                 )
