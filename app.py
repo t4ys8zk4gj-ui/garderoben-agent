@@ -40,7 +40,7 @@ WORKFLOW & REGELN:
    - Uni -> locker bis alltagstauglich (Smart-Everyday)
    - Arbeit -> gepflegt bis formell (Business Casual / Formell)
 3. Nutze für das Wetter und die Uhrzeit AUSSCHLIESSLICH die übergebenen Open-Meteo-Werte. Erfinde niemals eigene Werte.
-4. Schlage genau 2 bis maximal 3 vollständige Outfit-Varianten vor (keine Marken).
+4. Schlage IMMER genau 3 vollständige, unterschiedliche Outfit-Varianten vor (Variante 1, Variante 2 und Variante 3 – keine Marken). Gib niemals nur eine einzelne Variante aus!
 5. Genau 1 Begründungssatz pro Variante: Verknüpfe Zeitpunkt/Wetterwerte (Temperatur, Wind, Regen), Anlass und Style logisch in diesem Satz.
 6. Schließe deine Nachricht IMMER exakt mit der Frage: „Passt das zusammen?“
 7. Maximal 3 Durchläufe. Übergib danach oder bei Zustimmung die Entscheidung an die Person.
@@ -51,7 +51,7 @@ NICHT-ZIELE (STRIKT ABLEHNEN):
 3. Keine dauerhafte Speicherung über die Sitzung hinaus.
 4. Keine Stilberatung außerhalb von Uni, Arbeit und Freizeit (keine Hochzeiten, Galas, Kostüme).
 
-STRUKTUR DER OUTFIT-ANTWORT:
+STRUKTUR DER OUTFIT-ANTWORT (ALLE 3 VARIANTEN PFLICHT):
 Kurzüberblick: [Ort] ([Zeitpunkt]) | [Temperatur] °C, [Wind] km/h Wind, [Regen]% Regenrisiko | Anlass: [Anlass] (Style: [Style])
 
 • **Variante 1 (Alltagstauglich / Klassisch):** [Konkrete Teile: Oberteil, Schicht, Beinkleid, Schuhe, Jacke]
@@ -157,7 +157,6 @@ def detect_city_name(text: str, client: Groq, model: str) -> str:
         "ja", "nein", "passt", "variante", "ok", "danke", "gut", "anders", "formell", "locker"
     }
 
-    # 1. Schnelle Prüfung bei Komma-Stichworten (z. B. "Wien, Uni, 8 Uhr")
     tokens = [w.strip(".,!?:;\"'()[]{}-/") for w in re.split(r'[,;/|\s]+', text)]
     for token in tokens:
         if len(token) > 2 and not token.isdigit() and token.lower() not in STOPWORDS:
@@ -165,12 +164,11 @@ def detect_city_name(text: str, client: Groq, model: str) -> str:
             if "error" not in test:
                 return test["ort"]
 
-    # 2. LLM-Fallback
     try:
         res = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "Antworte NUR mit dem Namen der Stadt (z.B. 'Wien'). Wenn kein Ort genannt ist, antworte NUR mit 'NONE'."},
+                {"role": "system", "content": "Antworte NUR mit dem reinen Namen der Stadt (z.B. 'Wien'). Wenn kein Ort genannt ist, antworte NUR mit 'NONE'."},
                 {"role": "user", "content": text}
             ],
             temperature=0.0,
@@ -191,7 +189,6 @@ st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="cent
 st.title("👔 Garderoben-Agent: Was ziehe ich an?")
 st.caption("Modul Digitalisierung (NRM 28) · Zeitgenaue Open-Meteo API & Damen-/Herren-Auswahl")
 
-# DAUERHAFT SICHTBARE ANLEITUNG VOR JEDER ANFRAGE
 with st.container(border=True):
     st.markdown("### 📋 Eingabehilfe: Benötigte Parameter für deine Anfrage")
     st.markdown(
@@ -254,7 +251,6 @@ with st.sidebar:
         st.session_state.current_city = None
         st.rerun()
 
-# Session States initialisieren
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 if "current_weather" not in st.session_state:
@@ -262,7 +258,6 @@ if "current_weather" not in st.session_state:
 if "current_city" not in st.session_state:
     st.session_state.current_city = None
 
-# Chat-Verlauf rendern
 for msg in st.session_state.messages:
     role = msg.get("role")
     content = msg.get("content")
@@ -275,14 +270,12 @@ st.caption("⌨️ **Kurzformat:** `Ort, Anlass (Uni/Arbeit/Freizeit), [Uhrzeit]
 user_input = st.chat_input("Stichworte eingeben, z. B.: Wien, Uni, 8 Uhr, Damen")
 
 if user_input:
-    # 1. Stadt und gewünschte Uhrzeit aus den Stichworten ermitteln
     detected_city = detect_city_name(user_input, client, selected_model)
     day_offset, target_hour = parse_time_from_text(user_input)
 
     if detected_city:
         st.session_state.current_city = detected_city
 
-    # Wetter abrufen, sobald eine Stadt bekannt ist
     if st.session_state.current_city and (detected_city or target_hour is not None or not st.session_state.current_weather):
         weather = get_weather_data(st.session_state.current_city, day_offset, target_hour)
         if "error" not in weather:
@@ -292,12 +285,10 @@ if user_input:
                 f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
             )
 
-    # 2. Nutzernachricht anzeigen und speichern
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 3. Kontext für das Modell aufbereiten
     api_messages = []
     for m in st.session_state.messages:
         api_messages.append({"role": m["role"], "content": m["content"]})
@@ -307,19 +298,19 @@ if user_input:
         weather_note = (
             f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']} zum Zeitpunkt '{w['zeitpunkt']}': "
             f"Temperatur: {w['temperatur']} °C, Wind: {w['wind']} km/h, Niederschlagsrisiko: {w['regen']}%. "
-            f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen!]"
+            f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen! "
+            f"WICHTIG: Gib zwingend alle 3 vollständigen Varianten (Variante 1, Variante 2 und Variante 3) mit je 1 Begründungssatz aus und schließe mit 'Passt das zusammen?'.]"
         )
         api_messages[-1]["content"] += weather_note
 
-    # 4. Antwort generieren
     with st.chat_message("assistant"):
-        with st.spinner("Erstelle Outfit-Vorschlag..."):
+        with st.spinner("Erstelle alle 3 Outfit-Varianten..."):
             try:
                 response = client.chat.completions.create(
                     model=selected_model,
                     messages=api_messages,
                     temperature=0.6,
-                    max_tokens=800,
+                    max_tokens=1200,
                     frequency_penalty=0.5,
                     presence_penalty=0.3
                 )
