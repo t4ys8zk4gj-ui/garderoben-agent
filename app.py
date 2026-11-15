@@ -4,11 +4,17 @@ import streamlit as st
 from groq import Groq
 
 # --- 1. SYSTEM-PROMPT & REGELN (NRM 28) ---
-SYSTEM_PROMPT = """
+TRANSPARENZ_TEXT = (
+    "ℹ️ **Transparenzhinweis:** Ich bin ein KI-System zur Unterstützung deiner morgendlichen "
+    "Outfit-Wahl. Meine Vorschläge basieren auf Live-Wetterdaten und festen Bekleidungsregeln – "
+    "die endgültige Entscheidung triffst immer du selbst."
+)
+
+SYSTEM_PROMPT = f"""
 Du bist der „Garderoben-Agent: Was ziehe ich an?“. Du unterstützt Studierende und Berufstätige dabei, in unter zwei Minuten eine passende Outfit-Auswahl auf Basis des Wetters am Zielort (inklusive Uhrzeit) und des Tagesanlasses zu treffen.
 
 WICHTIG ZU STICHWORT-EINGABEN:
-Nutzende geben ihre Anfrage oft extrem kurz in Stichworten ein (z. B. „Wien, Uni, 8 Uhr, Herren“ oder „München, Arbeit, Damen“). Akzeptiere diese Stichworte vollständig als gültige Eingabe!
+Nutzende geben ihre Anfrage oft kurz in Stichworten ein. Akzeptiere diese Stichworte vollständig als gültige Eingabe!
 
 SPRACHREGELN:
 - Antworte in natürlichem, fehlerfreiem Hochdeutsch.
@@ -17,7 +23,7 @@ SPRACHREGELN:
 
 TRANSPARENZHINWEIS:
 Beginne deine allererste Antwort im Chat IMMER zwingend mit folgendem Wortlaut:
-„ℹ️ **Transparenzhinweis:** Ich bin ein KI-System zur Unterstützung deiner morgendlichen Outfit-Wahl. Meine Vorschläge basieren auf Live-Wetterdaten und festen Bekleidungsregeln – die endgültige Entscheidung triffst immer du selbst.“
+„{TRANSPARENZ_TEXT}“
 
 UNTERSCHEIDUNG DAMEN- UND HERRENBEKLEIDUNG (MARKENFREI):
 - **Herrenbekleidung:**
@@ -32,14 +38,14 @@ UNTERSCHEIDUNG DAMEN- UND HERRENBEKLEIDUNG (MARKENFREI):
 
 WORKFLOW & REGELN:
 1. Prüfe, ob die 2 Pflichtparameter vorliegen: **Zielort** und **Anlass** (Uni, Arbeit oder Freizeit).
-   - Fehlt der Ort? Frage kurz nach dem Zielort.
+   - Fehlt der Ort? Melde zwingend: „Fehler: Fehlende Ortsangabe. Bitte gib deinen Zielort an.“ Erfinde NIEMALS einen Ort!
    - Fehlt der Anlass? Frage kurz nach dem Anlass (Uni, Arbeit oder Freizeit).
    - WICHTIG: Frage den Nutzer NIEMALS nach Wetterwerten! Das Wetter kommt automatisch aus dem System.
 2. Leite den Style ab:
    - Freizeit -> locker & funktional
    - Uni -> locker bis alltagstauglich (Smart-Everyday)
    - Arbeit -> gepflegt bis formell (Business Casual / Formell)
-3. Nutze für das Wetter und die Uhrzeit AUSSCHLIESSLICH die übergebenen Open-Meteo-Werte. Erfinde niemals eigene Werte.
+3. Nutze für das Wetter und die Uhrzeit AUSSCHLIESSLICH die übergebenen Open-Meteo-Werte. Erfinde niemals eigene Werte oder Orte.
 4. Schlage IMMER genau 3 vollständige, unterschiedliche Outfit-Varianten vor (Variante 1, Variante 2 und Variante 3 – keine Marken). Gib niemals nur eine einzelne Variante aus!
 5. Genau 1 Begründungssatz pro Variante: Verknüpfe Zeitpunkt/Wetterwerte (Temperatur, Wind, Regen), Anlass und Style logisch in diesem Satz.
 6. Schließe deine Nachricht IMMER exakt mit der Frage: „Passt das zusammen?“
@@ -51,7 +57,7 @@ NICHT-ZIELE (STRIKT ABLEHNEN):
 3. Keine dauerhafte Speicherung über die Sitzung hinaus.
 4. Keine Stilberatung außerhalb von Uni, Arbeit und Freizeit (keine Hochzeiten, Galas, Kostüme).
 
-STRUKTUR DER OUTFIT-ANTWORT (ALLE 3 VARIANTEN PFLICHT):
+STRUKTUR DER OUTFIT-ANTWORT (WENN ORT UND ANLASS VORLIEGEN):
 Kurzüberblick: [Ort] ([Zeitpunkt]) | [Temperatur] °C, [Wind] km/h Wind, [Regen]% Regenrisiko | Anlass: [Anlass] (Style: [Style])
 
 • **Variante 1 (Alltagstauglich / Klassisch):** [Konkrete Teile: Oberteil, Schicht, Beinkleid, Schuhe, Jacke]
@@ -148,41 +154,71 @@ def get_weather_data(city: str, day_offset: int = 0, hour: int = None) -> dict:
         return {"error": f"Fehler beim API-Abruf: {str(e)}"}
 
 def detect_city_name(text: str, client: Groq, model: str) -> str:
-    """Erkennt Städte zuverlässig auch bei reinen Stichwort-Eingaben und Kleinschreibung."""
-    STOPWORDS = {
+    """
+    Erkennt ausschließlich tatsächlich im Text genannte Städte.
+    Verhindert Halluzinationen durch strikten Abgleich mit dem Eingabetext.
+    """
+    NON_CITY_WORDS = {
         "ich", "du", "er", "sie", "es", "wir", "ihr", "was", "wie", "wo", "und", "oder", "für", "in", "um",
         "heute", "morgen", "abend", "abends", "mittag", "mittags", "vormittag", "nachmittag", "nacht", "früh",
         "uhr", "uni", "arbeit", "freizeit", "büro", "schule", "outfit", "mann", "frau", "herren", "damen",
         "männer", "frauen", "kleidung", "hörsaal", "ziehe", "anziehen", "bitte", "warm", "kalt", "wärmer",
-        "ja", "nein", "passt", "variante", "ok", "danke", "gut", "anders", "formell", "locker"
+        "ja", "nein", "passt", "variante", "ok", "danke", "gut", "anders", "formell", "locker", "soll",
+        "kann", "muss", "tragen", "gehen", "fahren", "machen", "brauche", "suche", "empfiehlst", "marke",
+        "jacke", "hose", "schuhe", "hemd", "bluse", "wetter", "regen", "wind", "grad", "hochzeit", "party"
     }
-
-    tokens = [w.strip(".,!?:;\"'()[]{}-/") for w in re.split(r'[,;/|\s]+', text)]
-    for token in tokens:
-        if len(token) > 2 and not token.isdigit() and token.lower() not in STOPWORDS:
-            test = get_weather_data(token)
-            if "error" not in test:
-                return test["ort"]
 
     try:
         res = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "Antworte NUR mit dem reinen Namen der Stadt (z.B. 'Wien'). Wenn kein Ort genannt ist, antworte NUR mit 'NONE'."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Extrahiere ausschließlich den im Text explizit genannten Stadt- oder Ortsnamen. "
+                        "Erfinde NIEMALS einen Ort! Wenn im Text kein konkreter geografischer Ort genannt ist, "
+                        "antworte zwingend nur mit dem Wort: NONE"
+                    )
+                },
                 {"role": "user", "content": text}
             ],
             temperature=0.0,
             max_tokens=10
         )
-        raw = res.choices[0].message.content.strip(".,!?:;\"'()[]{}")
-        if "none" not in raw.lower() and len(raw) < 25:
-            test = get_weather_data(raw)
-            if "error" not in test:
-                return test["ort"]
+        raw = res.choices[0].message.content.strip(".,!?:;\"'()[]{}-/ \n\t")
+        
+        # Prüfen, ob das Modell 'NONE' geantwortet hat
+        if not raw or "none" in raw.lower() or len(raw) > 25 or len(raw) < 2:
+            return None
+
+        # Sicherheitsprüfung: Steht das extrahierte Wort wirklich im Eingabetext des Nutzers?
+        input_tokens = [w.strip(".,!?:;\"'()[]{}-/").lower() for w in re.split(r'[,;/|\s]+', text)]
+        raw_lower = raw.lower()
+        
+        if raw_lower in NON_CITY_WORDS:
+            return None
+
+        if raw_lower not in input_tokens and raw_lower not in text.lower():
+            return None
+
+        # Geografische Prüfung über Open-Meteo
+        test = get_weather_data(raw)
+        if "error" not in test:
+            return test["ort"]
     except Exception:
         pass
 
     return None
+
+def is_non_goal_query(text: str) -> bool:
+    """Prüft, ob die Anfrage auf ein Nicht-Ziel (Marken, Kauf, Größen, Fotos, fremde Anlässe) abzielt."""
+    t = text.lower()
+    non_goal_keywords = [
+        "marke", "kaufen", "shop", "preis", "kosten", "bestellen", "link", "zalando", "amazon",
+        "foto", "bild", "größe", "konfektionsgröße", "gewicht", "kilo", "cm", "körper",
+        "hochzeit", "gala", "party", "kostüm", "speichern"
+    ]
+    return any(k in t for k in non_goal_keywords)
 
 # --- 3. STREAMLIT SETUP & SICHTBARE PARAMETER-HINWEISE ---
 st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="centered")
@@ -276,46 +312,62 @@ if user_input:
     if detected_city:
         st.session_state.current_city = detected_city
 
-    if st.session_state.current_city and (detected_city or target_hour is not None or not st.session_state.current_weather):
-        weather = get_weather_data(st.session_state.current_city, day_offset, target_hour)
-        if "error" not in weather:
-            st.session_state.current_weather = weather
-            st.info(
-                f"📡 **Open-Meteo Wetterdaten für {weather['ort']} ({weather['zeitpunkt']}):** "
-                f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
-            )
-
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    api_messages = []
-    for m in st.session_state.messages:
-        api_messages.append({"role": m["role"], "content": m["content"]})
-
-    if st.session_state.current_weather:
-        w = st.session_state.current_weather
-        weather_note = (
-            f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']} zum Zeitpunkt '{w['zeitpunkt']}': "
-            f"Temperatur: {w['temperatur']} °C, Wind: {w['wind']} km/h, Niederschlagsrisiko: {w['regen']}%. "
-            f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen! "
-            f"WICHTIG: Gib zwingend alle 3 vollständigen Varianten (Variante 1, Variante 2 und Variante 3) mit je 1 Begründungssatz aus und schließe mit 'Passt das zusammen?'.]"
+    # HARTE PRÜFUNG: Wenn kein Ort bekannt ist und keine Nicht-Ziel-Frage vorliegt -> Fehlermeldung ohne Halluzination
+    if not st.session_state.current_city and not is_non_goal_query(user_input):
+        is_first_reply = not any(m["role"] == "assistant" for m in st.session_state.messages)
+        prefix = f"{TRANSPARENZ_TEXT}\n\n" if is_first_reply else ""
+        error_reply = (
+            f"{prefix}⚠️ **Fehler: Fehlende Ortsangabe**\n\n"
+            "Damit ich die Live-Wetterdaten abrufen und dir ein passendes Outfit vorschlagen kann, "
+            "benötige ich zwingend deinen **Zielort** (z. B. *Wien, Uni* oder *München, Arbeit*).\n\n"
+            "Für welchen Ort suchst du ein Outfit?"
         )
-        api_messages[-1]["content"] += weather_note
-
-    with st.chat_message("assistant"):
-        with st.spinner("Erstelle alle 3 Outfit-Varianten..."):
-            try:
-                response = client.chat.completions.create(
-                    model=selected_model,
-                    messages=api_messages,
-                    temperature=0.6,
-                    max_tokens=1200,
-                    frequency_penalty=0.5,
-                    presence_penalty=0.3
+        with st.chat_message("assistant"):
+            st.error("Fehler: Fehlende Ortsangabe")
+            st.markdown(error_reply)
+        st.session_state.messages.append({"role": "assistant", "content": error_reply})
+    else:
+        # Wetterdaten abrufen, falls Stadt vorhanden
+        if st.session_state.current_city and (detected_city or target_hour is not None or not st.session_state.current_weather):
+            weather = get_weather_data(st.session_state.current_city, day_offset, target_hour)
+            if "error" not in weather:
+                st.session_state.current_weather = weather
+                st.info(
+                    f"📡 **Open-Meteo Wetterdaten für {weather['ort']} ({weather['zeitpunkt']}):** "
+                    f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
                 )
-                final_text = response.choices[0].message.content.strip()
-                st.markdown(final_text)
-                st.session_state.messages.append({"role": "assistant", "content": final_text})
-            except Exception as err:
-                st.error(f"⚠️ Fehler: {str(err)}")
+
+        api_messages = []
+        for m in st.session_state.messages:
+            api_messages.append({"role": m["role"], "content": m["content"]})
+
+        if st.session_state.current_weather:
+            w = st.session_state.current_weather
+            weather_note = (
+                f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']} zum Zeitpunkt '{w['zeitpunkt']}': "
+                f"Temperatur: {w['temperatur']} °C, Wind: {w['wind']} km/h, Niederschlagsrisiko: {w['regen']}%. "
+                f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen! "
+                f"WICHTIG: Gib zwingend alle 3 vollständigen Varianten (Variante 1, Variante 2 und Variante 3) mit je 1 Begründungssatz aus und schließe mit 'Passt das zusammen?'.]"
+            )
+            api_messages[-1]["content"] += weather_note
+
+        with st.chat_message("assistant"):
+            with st.spinner("Erstelle Antwort..."):
+                try:
+                    response = client.chat.completions.create(
+                        model=selected_model,
+                        messages=api_messages,
+                        temperature=0.6,
+                        max_tokens=1200,
+                        frequency_penalty=0.5,
+                        presence_penalty=0.3
+                    )
+                    final_text = response.choices[0].message.content.strip()
+                    st.markdown(final_text)
+                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+                except Exception as err:
+                    st.error(f"⚠️ Fehler: {str(err)}")
