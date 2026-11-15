@@ -72,7 +72,79 @@ Kurzüberblick: [Ort] ([Zeitpunkt]) | [Temperatur] °C, [Wind] km/h Wind, [Regen
 Passt das zusammen?
 """
 
-# --- 2. ZEIT- & ORTSERKENNUNG SOWIE OPEN-METEO API ---
+# --- 2. PRÜFFUNKTIONEN (NICHT-ZIELE, ZEIT, ORT & WETTER-API) ---
+def check_non_goals(text: str) -> str:
+    """
+    Prüft deterministisch auf Nicht-Ziele (Marken, Kaufberatung, Körpermaße, fremde Anlässe)
+    und gibt bei einem Treffer direkt den passenden Ablehnungsgrund zurück.
+    """
+    t = text.lower()
+    tokens = set(re.split(r'[,;/|\s.!?:;"\'()\[\]{}\-]+', t))
+
+    # 1. Marken- und Kaufberatung
+    brand_keywords = {
+        "marke", "marken", "markenname", "markennamen", "markenempfehlung", "kaufen", "kauf",
+        "kaufberatung", "shop", "shops", "online-shop", "preis", "preise", "kosten", "kostet",
+        "bestellen", "kauflink", "rabatt", "angebot", "zalando", "amazon", "aboutyou", "asos",
+        "nike", "adidas", "puma", "reebok", "asics", "newbalance", "vans", "converse",
+        "zara", "h&m", "hm", "uniqlo", "mango", "bershka", "pull&bear", "massimodutti", "c&a",
+        "gucci", "prada", "louisvuitton", "chanel", "dior", "balenciaga", "versace", "hermes",
+        "levi", "levis", "wrangler", "diesel", "g-star", "pepe",
+        "northface", "jackwolfskin", "patagonia", "columbia", "mammut", "vaude", "salomon",
+        "boss", "hugoboss", "tommy", "hilfiger", "calvinklein", "ralphlauren", "lacoste",
+        "gant", "marcO'polo", "marcopolo", "esprit", "s.oliver", "soliver", "tomtailor",
+        "carhartt", "dickies", "stoneisland", "moncler", "canadagoose", "wellensteyn",
+        "timberland", "drmartens", "martens", "birkenstock", "ugg", "geox", "deichmann", "snipes"
+    }
+    brand_phrases = [
+        "north face", "jack wolfskin", "new balance", "hugo boss", "tommy hilfiger",
+        "calvin klein", "ralph lauren", "stone island", "canada goose", "dr. martens",
+        "dr martens", "about you", "marc o'polo", "s. oliver", "tom tailor", "h & m", "c & a"
+    ]
+    if (tokens & brand_keywords) or any(p in t for p in brand_phrases):
+        return (
+            "⚠️ **Fehler: Keine Marken- oder Kaufberatung (Nicht-Ziel)**\n\n"
+            "Als neutraler Garderoben-Agent gebe ich **keine Markenempfehlungen, Produktnamen, "
+            "Preise oder Kauflinks** aus und bewerte auch keine einzelnen Kleidungsmarken.\n\n"
+            "Bitte gib deine Anfrage ohne Markennamen ein (z. B. *Wien, Uni, 8 Uhr, Damen*)."
+        )
+
+    # 2. Körperdaten, Größen & Fotos
+    body_keywords = {
+        "foto", "fotos", "bild", "bilder", "selfie", "hochladen", "konfektionsgröße",
+        "kleidergröße", "schuhgröße", "körpergröße", "gewicht", "kilo", "kilogramm",
+        "körpermaße", "maße", "taillenumfang", "brustumfang", "bmi", "figurtyp"
+    }
+    if (tokens & body_keywords) or re.search(r'\b\d{2,3}\s*(kg|kilo|cm)\b', t) or re.search(r'\bgröße\s*(xs|s|m|l|xl|xxl|\d{2})\b', t):
+        return (
+            "⚠️ **Fehler: Keine Auswertung von Körperdaten, Größen oder Fotos (Nicht-Ziel)**\n\n"
+            "Aus Gründen des Datenschutzes (*Privacy by Design*) werte ich **keine Fotos, "
+            "Körpermaße, Gewichtsangaben oder Konfektionsgrößen** aus.\n\n"
+            "Bitte beschränke deine Eingabe auf Ort, Anlass, optionale Uhrzeit und Damen/Herren."
+        )
+
+    # 3. Fremde Anlässe außerhalb von Uni, Arbeit und Freizeit
+    event_keywords = {
+        "hochzeit", "braut", "bräutigam", "trauzeuge", "gala", "roterteppich", "abiball",
+        "prom", "fasching", "karneval", "kostüm", "kostümparty", "halloween", "taufe",
+        "beerdigung", "trauerfeier", "oper", "staatsoper", "junggesellenabschied"
+    }
+    if tokens & event_keywords:
+        return (
+            "⚠️ **Fehler: Anlass außerhalb des Anwendungsbereichs (Nicht-Ziel)**\n\n"
+            "Ich bin ausschließlich auf die Alltagsanlässe **Uni, Arbeit und Freizeit** spezialisiert "
+            "und führe keine Stilberatung für besondere Events (wie Hochzeiten, Galas oder Kostümpartys) durch."
+        )
+
+    # 4. Dauerhafte Speicherung
+    if any(w in tokens for w in {"speichern", "abspeichern", "merken", "profil", "datenbank", "account"}):
+        return (
+            "⚠️ **Fehler: Keine dauerhafte Datenspeicherung (Nicht-Ziel)**\n\n"
+            "Ich speichere keine persönlichen Profile, Kleiderschränke oder Einstellungen über die aktuelle Sitzung hinaus."
+        )
+
+    return None
+
 def parse_time_from_text(text: str) -> tuple:
     """Erkennt Zeitangaben auch in kurzen Stichworten (z. B. '8 Uhr', '18:00', 'morgen früh', 'abend')."""
     t = text.lower()
@@ -187,11 +259,9 @@ def detect_city_name(text: str, client: Groq, model: str) -> str:
         )
         raw = res.choices[0].message.content.strip(".,!?:;\"'()[]{}-/ \n\t")
         
-        # Prüfen, ob das Modell 'NONE' geantwortet hat
         if not raw or "none" in raw.lower() or len(raw) > 25 or len(raw) < 2:
             return None
 
-        # Sicherheitsprüfung: Steht das extrahierte Wort wirklich im Eingabetext des Nutzers?
         input_tokens = [w.strip(".,!?:;\"'()[]{}-/").lower() for w in re.split(r'[,;/|\s]+', text)]
         raw_lower = raw.lower()
         
@@ -201,7 +271,6 @@ def detect_city_name(text: str, client: Groq, model: str) -> str:
         if raw_lower not in input_tokens and raw_lower not in text.lower():
             return None
 
-        # Geografische Prüfung über Open-Meteo
         test = get_weather_data(raw)
         if "error" not in test:
             return test["ort"]
@@ -209,16 +278,6 @@ def detect_city_name(text: str, client: Groq, model: str) -> str:
         pass
 
     return None
-
-def is_non_goal_query(text: str) -> bool:
-    """Prüft, ob die Anfrage auf ein Nicht-Ziel (Marken, Kauf, Größen, Fotos, fremde Anlässe) abzielt."""
-    t = text.lower()
-    non_goal_keywords = [
-        "marke", "kaufen", "shop", "preis", "kosten", "bestellen", "link", "zalando", "amazon",
-        "foto", "bild", "größe", "konfektionsgröße", "gewicht", "kilo", "cm", "körper",
-        "hochzeit", "gala", "party", "kostüm", "speichern"
-    ]
-    return any(k in t for k in non_goal_keywords)
 
 # --- 3. STREAMLIT SETUP & SICHTBARE PARAMETER-HINWEISE ---
 st.set_page_config(page_title="Garderoben-Agent", page_icon="👔", layout="centered")
@@ -251,7 +310,8 @@ if not api_key:
 
 client = Groq(api_key=api_key)
 
-EXCLUDE = ["whisper", "orpheus", "guard", "vision", "canopy", "tts", "embed", "safeguard"]
+# 'allam' und weitere ungeeignete Spezialmodelle explizit ausschließen
+EXCLUDE = ["whisper", "orpheus", "guard", "vision", "canopy", "tts", "embed", "safeguard", "allam", "playai"]
 try:
     all_models = [m.id for m in client.models.list().data]
     valid_models = [m for m in all_models if not any(x in m.lower() for x in EXCLUDE)]
@@ -262,7 +322,8 @@ PREFERRED_ORDER = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "llama3-8b-8192",
-    "gemma2-9b-it"
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768"
 ]
 
 default_idx = 0
@@ -277,7 +338,7 @@ with st.sidebar:
         selected_model = st.selectbox("Aktives Text-LLM:", valid_models, index=default_idx)
         st.success(f"Aktiv: `{selected_model}`")
     else:
-        selected_model = "llama-3.1-8b-instant"
+        selected_model = "llama-3.3-70b-versatile"
         st.caption("Standardmodell aktiv.")
     
     st.divider()
@@ -306,68 +367,81 @@ st.caption("⌨️ **Kurzformat:** `Ort, Anlass (Uni/Arbeit/Freizeit), [Uhrzeit]
 user_input = st.chat_input("Stichworte eingeben, z. B.: Wien, Uni, 8 Uhr, Damen")
 
 if user_input:
-    detected_city = detect_city_name(user_input, client, selected_model)
-    day_offset, target_hour = parse_time_from_text(user_input)
-
-    if detected_city:
-        st.session_state.current_city = detected_city
-
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # HARTE PRÜFUNG: Wenn kein Ort bekannt ist und keine Nicht-Ziel-Frage vorliegt -> Fehlermeldung ohne Halluzination
-    if not st.session_state.current_city and not is_non_goal_query(user_input):
-        is_first_reply = not any(m["role"] == "assistant" for m in st.session_state.messages)
-        prefix = f"{TRANSPARENZ_TEXT}\n\n" if is_first_reply else ""
-        error_reply = (
-            f"{prefix}⚠️ **Fehler: Fehlende Ortsangabe**\n\n"
-            "Damit ich die Live-Wetterdaten abrufen und dir ein passendes Outfit vorschlagen kann, "
-            "benötige ich zwingend deinen **Zielort** (z. B. *Wien, Uni* oder *München, Arbeit*).\n\n"
-            "Für welchen Ort suchst du ein Outfit?"
-        )
+    is_first_reply = not any(m["role"] == "assistant" for m in st.session_state.messages)
+    prefix = f"{TRANSPARENZ_TEXT}\n\n" if is_first_reply else ""
+
+    # 1. HARTE PRÜFUNG AUF NICHT-ZIELE (Marken, Kaufberatung, Größen, Fotos, fremde Anlässe)
+    non_goal_error = check_non_goals(user_input)
+    if non_goal_error:
+        full_error = f"{prefix}{non_goal_error}"
         with st.chat_message("assistant"):
-            st.error("Fehler: Fehlende Ortsangabe")
-            st.markdown(error_reply)
-        st.session_state.messages.append({"role": "assistant", "content": error_reply})
+            st.error("Fehler: Unzulässige Anfrage (Nicht-Ziel)")
+            st.markdown(full_error)
+        st.session_state.messages.append({"role": "assistant", "content": full_error})
+
     else:
-        # Wetterdaten abrufen, falls Stadt vorhanden
-        if st.session_state.current_city and (detected_city or target_hour is not None or not st.session_state.current_weather):
-            weather = get_weather_data(st.session_state.current_city, day_offset, target_hour)
-            if "error" not in weather:
-                st.session_state.current_weather = weather
-                st.info(
-                    f"📡 **Open-Meteo Wetterdaten für {weather['ort']} ({weather['zeitpunkt']}):** "
-                    f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
-                )
+        # 2. Ort und Zeit prüfen
+        detected_city = detect_city_name(user_input, client, selected_model)
+        day_offset, target_hour = parse_time_from_text(user_input)
 
-        api_messages = []
-        for m in st.session_state.messages:
-            api_messages.append({"role": m["role"], "content": m["content"]})
+        if detected_city:
+            st.session_state.current_city = detected_city
 
-        if st.session_state.current_weather:
-            w = st.session_state.current_weather
-            weather_note = (
-                f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']} zum Zeitpunkt '{w['zeitpunkt']}': "
-                f"Temperatur: {w['temperatur']} °C, Wind: {w['wind']} km/h, Niederschlagsrisiko: {w['regen']}%. "
-                f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen! "
-                f"WICHTIG: Gib zwingend alle 3 vollständigen Varianten (Variante 1, Variante 2 und Variante 3) mit je 1 Begründungssatz aus und schließe mit 'Passt das zusammen?'.]"
+        # 3. HARTE PRÜFUNG AUF FEHLENDE ORTSANGABE
+        if not st.session_state.current_city:
+            error_reply = (
+                f"{prefix}⚠️ **Fehler: Fehlende Ortsangabe**\n\n"
+                "Damit ich die Live-Wetterdaten abrufen und dir ein passendes Outfit vorschlagen kann, "
+                "benötige ich zwingend deinen **Zielort** (z. B. *Wien, Uni* oder *München, Arbeit*).\n\n"
+                "Für welchen Ort suchst du ein Outfit?"
             )
-            api_messages[-1]["content"] += weather_note
+            with st.chat_message("assistant"):
+                st.error("Fehler: Fehlende Ortsangabe")
+                st.markdown(error_reply)
+            st.session_state.messages.append({"role": "assistant", "content": error_reply})
 
-        with st.chat_message("assistant"):
-            with st.spinner("Erstelle Antwort..."):
-                try:
-                    response = client.chat.completions.create(
-                        model=selected_model,
-                        messages=api_messages,
-                        temperature=0.6,
-                        max_tokens=1200,
-                        frequency_penalty=0.5,
-                        presence_penalty=0.3
+        else:
+            # 4. Wetterdaten abrufen und Outfit-Varianten generieren
+            if detected_city or target_hour is not None or not st.session_state.current_weather:
+                weather = get_weather_data(st.session_state.current_city, day_offset, target_hour)
+                if "error" not in weather:
+                    st.session_state.current_weather = weather
+                    st.info(
+                        f"📡 **Open-Meteo Wetterdaten für {weather['ort']} ({weather['zeitpunkt']}):** "
+                        f"{weather['temperatur']} °C | Wind: {weather['wind']} km/h | Regenrisiko: {weather['regen']} %"
                     )
-                    final_text = response.choices[0].message.content.strip()
-                    st.markdown(final_text)
-                    st.session_state.messages.append({"role": "assistant", "content": final_text})
-                except Exception as err:
-                    st.error(f"⚠️ Fehler: {str(err)}")
+
+            api_messages = []
+            for m in st.session_state.messages:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+
+            if st.session_state.current_weather:
+                w = st.session_state.current_weather
+                weather_note = (
+                    f"\n\n[SYSTEM-HINWEIS: Offizielle Open-Meteo Wetterdaten für {w['ort']} zum Zeitpunkt '{w['zeitpunkt']}': "
+                    f"Temperatur: {w['temperatur']} °C, Wind: {w['wind']} km/h, Niederschlagsrisiko: {w['regen']}%. "
+                    f"Verwende genau diese Zahlen und den Zeitpunkt im Kurzüberblick und in den Begründungen! "
+                    f"WICHTIG: Gib zwingend alle 3 vollständigen Varianten (Variante 1, Variante 2 und Variante 3) mit je 1 Begründungssatz aus und schließe mit 'Passt das zusammen?'.]"
+                )
+                api_messages[-1]["content"] += weather_note
+
+            with st.chat_message("assistant"):
+                with st.spinner("Erstelle alle 3 Outfit-Varianten..."):
+                    try:
+                        response = client.chat.completions.create(
+                            model=selected_model,
+                            messages=api_messages,
+                            temperature=0.6,
+                            max_tokens=1200,
+                            frequency_penalty=0.5,
+                            presence_penalty=0.3
+                        )
+                        final_text = response.choices[0].message.content.strip()
+                        st.markdown(final_text)
+                        st.session_state.messages.append({"role": "assistant", "content": final_text})
+                    except Exception as err:
+                        st.error(f"⚠️ Fehler: {str(err)}")
